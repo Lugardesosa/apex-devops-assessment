@@ -19,6 +19,7 @@ jobs:
       - name: Deploy to Huawei Cloud
         run: |
           cd ~/apex-devops-assessment
+          git pull origin dev_env
           docker-compose down || true
           docker-compose up -d --build
           sleep 15
