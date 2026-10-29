@@ -13,12 +13,12 @@ jobs:
 
       - name: Backup current deployment
         run: |
-          cd ~/apex-devops-assessment
+          cd /home/github-runner/apex-devops-assessment
           cp docker-compose.yml docker-compose.yml.backup || true
 
       - name: Deploy to Huawei Cloud
         run: |
-          cd ~/apex-devops-assessment
+          cd /home/github-runner/apex-devops-assessment
           git pull origin dev_env
           docker-compose down || true
           docker-compose up -d --build
@@ -26,7 +26,7 @@ jobs:
 
       - name: Health check
         run: |
-          cd ~/apex-devops-assessment
+          cd /home/github-runner/apex-devops-assessment
           docker-compose ps
           curl http://localhost:8000/health
           curl http://localhost:8000/readiness
@@ -34,7 +34,7 @@ jobs:
       - name: Rollback on failure
         if: failure()
         run: |
-          cd ~/apex-devops-assessment
+          cd /home/github-runner/apex-devops-assessment
           docker-compose down || true
           if [ -f docker-compose.yml.backup ]; then
             mv docker-compose.yml.backup docker-compose.yml
