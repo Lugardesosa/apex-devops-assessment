@@ -1,0 +1,133 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [dev_env, prod_env]
+  pull_request:
+    branches: [dev_env]
+
+jobs:
+  lint:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          flake8 app tests --count --select=E9,F63,F7,F82 --show-source --statistics
+          if [ $? -ne 0 ]; then
+            echo "Linting failed"
+            exit 1
+          fi
+
+  security:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install security tools
+        run: |
+          pip install safety bandit
+      
+      - name: Scan dependencies for vulnerabilities
+        run: |
+          echo "=== Dependency Security Scan ==="
+          safety check --file requirements.txt || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "SECURITY SCAN FAILED: Vulnerable dependencies detected"
+            exit 1
+          fi
+      
+      - name: Scan code for security issues
+        run: |
+          echo "=== Code Security Scan ==="
+          bandit -r app/ -f txt || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "CODE SCAN FAILED: Security issues detected"
+            exit 1
+          fi
+
+  test:
+    runs-on: self-hosted
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: apex_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/apex_db
+        run: |
+          echo "=== Running Unit Tests ==="
+          pytest tests/ -v || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "TESTS FAILED"
+            exit 1
+          fi
+
+  build:
+    runs-on: self-hosted
+    needs: [lint, security, test]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG=$(date +%Y%m%d_%H%M%S)_${{ github.sha }}
+          echo "Building image: apex-api:$IMAGE_TAG"
+          docker build -t apex-api:$IMAGE_TAG .
+          docker tag apex-api:$IMAGE_TAG apex-api:latest
+          echo "Docker image built successfully"
+
+  ci_summary:
+    runs-on: self-hosted
+    needs: [lint, security, test, build]
+    if: always()
+    steps:
+      - name: CI Pipeline Summary
+        run: |
+          echo "## CI Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Linting: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security Scan: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.security.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Pipeline failed - deployment blocked"
+            exit 1
+          fi
+          echo "All checks passed - ready for deployment"
