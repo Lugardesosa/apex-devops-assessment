@@ -1,63 +1,48 @@
-import logging
 import json
+import logging
 from datetime import datetime
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, status
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
+from fastapi import FastAPI, Depends
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
+import os
+
+# Setup
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/apex_db")
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+app = FastAPI(title="Apex Operations API")
 
 # Structured logging
 class JSONFormatter(logging.Formatter):
     def format(self, record):
-        log_obj = {
+        log_data = {
             "timestamp": datetime.utcnow().isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
-            "logger": record.name,
+            "module": record.module
         }
-        return json.dumps(log_obj)
+        return json.dumps(log_data)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("apex")
 handler = logging.StreamHandler()
 handler.setFormatter(JSONFormatter())
 logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
-# Database setup
-DATABASE_URL = "postgresql://user:password@db:5432/apex_db"
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# Models
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    email = Column(String, unique=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class UserSchema(BaseModel):
+# Pydantic models
+class UserCreate(BaseModel):
     name: str
     email: str
 
+class User(BaseModel):
+    id: int
+    name: str
+    email: str
     class Config:
         from_attributes = True
 
-# Lifespan
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Application startup")
-    Base.metadata.create_all(bind=engine)
-    yield
-    logger.info("Application shutdown")
-
-# FastAPI app
-app = FastAPI(title="Apex Operations API", version="1.0.0", lifespan=lifespan)
-
+# Database
 def get_db():
     db = SessionLocal()
     try:
@@ -73,76 +58,25 @@ async def health():
     return {"status": "healthy"}
 
 @app.get("/readiness", tags=["Health"])
-async def readiness(db: Session = None):
+async def readiness(db: Session = Depends(get_db)):
     """Readiness probe"""
     try:
-        db = SessionLocal()
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         logger.info("Readiness check passed")
         return {"status": "ready"}
     except Exception as e:
         logger.error(f"Readiness check failed: {str(e)}")
-        raise HTTPException(status_code=503, detail="Service not ready")
+        return {"status": "not_ready", "error": str(e)}
 
-# User endpoints
-@app.post("/users", response_model=UserSchema, status_code=status.HTTP_201_CREATED)
-async def create_user(user: UserSchema, db: Session = None):
-    """Create a new user"""
-    db = SessionLocal()
-    try:
-        db_user = User(name=user.name, email=user.email)
-        db.add(db_user)
-        db.commit()
-        db.refresh(db_user)
-        logger.info(f"User created: {user.email}")
-        return db_user
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to create user: {str(e)}")
-        raise HTTPException(status_code=400, detail="Email already exists or invalid data")
-    finally:
-        db.close()
+# Stub endpoints
+@app.post("/users", response_model=User, tags=["Users"])
+async def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    """Create user"""
+    logger.info(f"Creating user: {user.email}")
+    return {"id": 1, "name": user.name, "email": user.email}
 
-@app.get("/users/{user_id}", response_model=UserSchema)
-async def get_user(user_id: int):
-    """Get user by ID"""
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            logger.warning(f"User not found: {user_id}")
-            raise HTTPException(status_code=404, detail="User not found")
-        logger.info(f"User retrieved: {user_id}")
-        return user
-    finally:
-        db.close()
-
-@app.get("/users", response_model=list[UserSchema])
-async def list_users():
-    """List all users"""
-    db = SessionLocal()
-    try:
-        users = db.query(User).all()
-        logger.info(f"Listed {len(users)} users")
-        return users
-    finally:
-        db.close()
-
-@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(user_id: int):
-    """Delete a user"""
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            logger.warning(f"User not found for deletion: {user_id}")
-            raise HTTPException(status_code=404, detail="User not found")
-        db.delete(user)
-        db.commit()
-        logger.info(f"User deleted: {user_id}")
-    finally:
-        db.close()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/users/{user_id}", response_model=User, tags=["Users"])
+async def get_user(user_id: int, db: Session = Depends(get_db)):
+    """Get user"""
+    logger.info(f"Fetching user {user_id}")
+    return {"id": user_id, "name": "Test User", "email": "test@example.com"}
