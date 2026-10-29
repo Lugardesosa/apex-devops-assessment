@@ -22,5 +22,5 @@ ECS: 203.123.83.136:8000
 - Reliability: Automatic rollback with backup restoration
 - Monitoring: Structured JSON logging, health checks
 
-Status: ✅ Live on Huawei Cloud
+Status: Live on Huawei Cloud
 Updated: October 30, 2026
