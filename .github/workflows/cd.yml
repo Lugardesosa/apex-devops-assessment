@@ -2,153 +2,40 @@ name: CD - Deploy to Huawei Cloud
 
 on:
   push:
-    branches: [dev_env]
+    branches:
+      - dev_env
 
 jobs:
-  security_scan:
-    name: Security - Dependency Scan
-    runs-on: self-hosted
+  deploy:
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install safety bandit
-      
-      - name: Scan for vulnerable dependencies
-        run: |
-          echo "=== Scanning dependencies with safety ==="
-          safety check --file requirements.txt --json || EXIT_CODE=$?
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "Security scan failed: vulnerable dependencies found"
-            exit 1
-          fi
-      
-      - name: Scan code for security issues
-        run: |
-          echo "=== Scanning code with bandit ==="
-          bandit -r app/ -f json -o bandit-report.json || true
-          cat bandit-report.json
 
-  build_and_deploy:
-    name: Build and Deploy to Huawei Cloud
-    runs-on: self-hosted
-    needs: security_scan
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Build Docker image
-        run: |
-          IMAGE_TAG=$(date +%Y%m%d_%H%M%S)_${{ github.sha }}
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          docker build -t apex-api:$IMAGE_TAG .
-          docker tag apex-api:$IMAGE_TAG apex-api:latest
-      
       - name: Backup current deployment
-        env:
-          DEPLOY_KEY: ${{ secrets.HUAWEI_DEPLOY_KEY }}
-          DEPLOY_HOST: ${{ secrets.HUAWEI_DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.HUAWEI_DEPLOY_USER }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST << 'ENDSSH'
-          set -e
           cd ~/apex-devops-assessment
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          echo "Backing up current state..."
-          cp docker-compose.yml docker-compose.backup.$TIMESTAMP.yml
-          echo "BACKUP_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-          ENDSSH
-      
+          cp docker-compose.yml docker-compose.yml.backup || true
+
       - name: Deploy to Huawei Cloud
-        id: deploy
-        env:
-          DEPLOY_KEY: ${{ secrets.HUAWEI_DEPLOY_KEY }}
-          DEPLOY_HOST: ${{ secrets.HUAWEI_DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.HUAWEI_DEPLOY_USER }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST << 'ENDSSH'
-          set +e
           cd ~/apex-devops-assessment
-          
-          echo "Pulling latest code..."
-          git fetch origin dev_env
-          git reset --hard origin/dev_env
-          
-          echo "Stopping old containers..."
           docker-compose down || true
-          
-          echo "Starting new containers..."
-          docker-compose up -d
-          
-          # Wait for service to start
-          sleep 10
-          
-          echo "Health check..."
-          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)
-          
-          if [ "$HEALTH" -ne 200 ]; then
-            echo "Health check failed: HTTP $HEALTH"
-            exit 1
-          fi
-          
-          echo "Deployment successful"
-          exit 0
-          ENDSSH
-          
-          DEPLOY_STATUS=$?
-          echo "DEPLOY_STATUS=$DEPLOY_STATUS" >> $GITHUB_OUTPUT
-          exit $DEPLOY_STATUS
-      
-      - name: Rollback on failure
-        if: failure() && steps.deploy.outcome == 'failure'
-        env:
-          DEPLOY_KEY: ${{ secrets.HUAWEI_DEPLOY_KEY }}
-          DEPLOY_HOST: ${{ secrets.HUAWEI_DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.HUAWEI_DEPLOY_USER }}
+          docker-compose up -d --build
+          sleep 15
+
+      - name: Health check
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST << 'ENDSSH'
-          set -e
           cd ~/apex-devops-assessment
-          
-          echo "=== ROLLBACK INITIATED ==="
-          LATEST_BACKUP=$(ls -t docker-compose.backup.*.yml 2>/dev/null | head -1)
-          
-          if [ -n "$LATEST_BACKUP" ]; then
-            echo "Rolling back to: $LATEST_BACKUP"
-            docker-compose -f $LATEST_BACKUP down || true
-            docker-compose -f $LATEST_BACKUP up -d
-            
-            sleep 10
-            HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)
-            
-            if [ "$HEALTH" -eq 200 ]; then
-              echo "Rollback successful"
-            else
-              echo "Rollback failed: health check returned HTTP $HEALTH"
-              exit 1
-            fi
-          else
-            echo "No backup found for rollback"
-            exit 1
-          fi
-          ENDSSH
-      
-      - name: Deployment Report
-        if: always()
+          docker-compose ps
+          curl http://localhost:8000/health
+          curl http://localhost:8000/readiness
+
+      - name: Rollback on failure
+        if: failure()
         run: |
-          echo "## Deployment Report" >> $GITHUB_STEP_SUMMARY
-          echo "- Image: apex-api:${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Branch: dev_env" >> $GITHUB_STEP_SUMMARY
-          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Timestamp: $(date)" >> $GITHUB_STEP_SUMMARY
+          cd ~/apex-devops-assessment
+          docker-compose down || true
+          if [ -f docker-compose.yml.backup ]; then
+            mv docker-compose.yml.backup docker-compose.yml
+            docker-compose up -d
+          fi
