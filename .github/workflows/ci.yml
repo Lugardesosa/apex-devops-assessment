@@ -1,8 +1,6 @@
 name: CI/CD Pipeline
 
 on:
-  push:
-    branches: [dev_env, prod_env]
   pull_request:
     branches: [dev_env]
 
